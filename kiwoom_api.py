@@ -59,22 +59,23 @@ class KiwoomAPI:
             for i in range(cnt):
                 date = self.ocx.dynamicCall("GetCommData(QString, QString, int, QString)", 
                                            trcode, rqname, i, "일자").strip()
-                open_price = int(self.ocx.dynamicCall("GetCommData(QString, QString, int, QString)", 
-                                                      trcode, rqname, i, "시가").strip())
-                high = int(self.ocx.dynamicCall("GetCommData(QString, QString, int, QString)", 
-                                                trcode, rqname, i, "고가").strip())
-                low = int(self.ocx.dynamicCall("GetCommData(QString, QString, int, QString)", 
-                                               trcode, rqname, i, "저가").strip())
-                close = int(self.ocx.dynamicCall("GetCommData(QString, QString, int, QString)", 
-                                                 trcode, rqname, i, "현재가").strip())
+                open_price = abs(int(self.ocx.dynamicCall("GetCommData(QString, QString, int, QString)", 
+                                                      trcode, rqname, i, "시가").strip()))
+                high = abs(int(self.ocx.dynamicCall("GetCommData(QString, QString, int, QString)", 
+                                                trcode, rqname, i, "고가").strip()))
+                low = abs(int(self.ocx.dynamicCall("GetCommData(QString, QString, int, QString)", 
+                                               trcode, rqname, i, "저가").strip()))
+                close = abs(int(self.ocx.dynamicCall("GetCommData(QString, QString, int, QString)", 
+                                                 trcode, rqname, i, "현재가").strip()))
                 volume = int(self.ocx.dynamicCall("GetCommData(QString, QString, int, QString)", 
                                                   trcode, rqname, i, "거래량").strip())
                 data.append([date, open_price, high, low, close, volume])
             self.tr_data = data
             
         elif rqname == "현재가":
-            current_price = int(self.ocx.dynamicCall("GetCommData(QString, QString, int, QString)", 
-                                                     trcode, rqname, 0, "현재가").strip())
+            price_str = self.ocx.dynamicCall("GetCommData(QString, QString, int, QString)", 
+                                             trcode, rqname, 0, "현재가").strip()
+            current_price = abs(int(price_str)) if price_str else 0
             self.tr_data = current_price
             
         elif rqname == "계좌평가잔고내역요청":
@@ -101,7 +102,7 @@ class KiwoomAPI:
                     'code': code,
                     'name': name,
                     'quantity': int(quantity) if quantity else 0,
-                    'buy_price': int(buy_price) if buy_price else 0,
+                    'buy_price': abs(int(buy_price)) if buy_price else 0,
                     'current_price': abs(int(current_price)) if current_price else 0,
                     'profit': int(profit) if profit else 0,
                     'profit_rate': float(profit_rate) if profit_rate else 0.0
@@ -161,19 +162,37 @@ class KiwoomAPI:
     
     def get_daily_data(self, code, days=100):
         """일봉 데이터 조회"""
-        self.set_input_value("종목코드", code)
-        self.set_input_value("기준일자", time.strftime("%Y%m%d"))
-        self.set_input_value("수정주가구분", "1")
-        self.comm_rq_data("일봉데이터", "opt10081", 0, "0101")
-        time.sleep(1.0)
-        return self.tr_data
+        try:
+            self.set_input_value("종목코드", code)
+            self.set_input_value("기준일자", time.strftime("%Y%m%d"))
+            self.set_input_value("수정주가구분", "1")
+            self.comm_rq_data("일봉데이터", "opt10081", 0, "0101")
+            time.sleep(1.0)
+            
+            # 데이터 유효성 검사
+            if isinstance(self.tr_data, list) and len(self.tr_data) > 0:
+                return self.tr_data
+            else:
+                return []
+        except Exception as e:
+            print(f"일봉 데이터 조회 오류 ({code}): {e}")
+            return []
     
     def get_current_price(self, code):
         """현재가 조회"""
-        self.set_input_value("종목코드", code)
-        self.comm_rq_data("현재가", "opt10001", 0, "0102")
-        time.sleep(1.0)
-        return self.tr_data
+        try:
+            self.set_input_value("종목코드", code)
+            self.comm_rq_data("현재가", "opt10001", 0, "0102")
+            time.sleep(1.0)
+            
+            # 데이터 유효성 검사
+            if isinstance(self.tr_data, int) and self.tr_data > 0:
+                return self.tr_data
+            else:
+                return 0
+        except Exception as e:
+            print(f"현재가 조회 오류 ({code}): {e}")
+            return 0
     
     def send_order(self, rqname, screen_no, acc_no, order_type, code, qty, price, hoga, order_no=""):
         """주문 전송
@@ -196,7 +215,8 @@ class KiwoomAPI:
             
     def get_balance(self):
         """잔고 조회
-            password:모의투자는 0000, KOA에서 입력된값으로 자동 채워짐. (아래 빈문자열)
+            계좌번호: 모의투자는 8자리인데, KOA에서는 10자리를 입력하라는 error뜸
+            password:모의투자는 0000, KOA에서 입력된값으로 자동 채워짐. (아래 빈문자열 push test)
         """
         self.set_input_value("계좌번호", self.account_num)
         self.set_input_value("비밀번호", "")  # 빈 문자열 = 저장된 비밀번호 사용

@@ -2,13 +2,12 @@ import sys
 import time
 from PyQt5.QtWidgets import QApplication
 from kiwoom_api import KiwoomAPI
-from strategy import BollingerBandStrategy, PositionManager
+from strategy import BollingerBandStrategy, RSIStrategy, PositionManager
 
 
 class TradingBot:
     def __init__(self):
         self.api = KiwoomAPI()
-        self.strategy = BollingerBandStrategy(period=20, std_dev=2)
         self.position_manager = PositionManager()
         
         # 설정
@@ -21,24 +20,118 @@ class TradingBot:
         self.profit_target_full = 1.5  # 1.5% 도달 시 전량 매도
         self.stop_loss = -1.5  # -1.5% 손절
         
+        # 매매전략 설정 (1: 볼린저밴드, 2: RSI)
+        self.strategy_type = 1  # 기본: 볼린저밴드 (여기서 변경 가능)
+        self.setup_strategy()
+        
+    def setup_strategy(self):
+        """전략 설정"""
+        if self.strategy_type == 1:
+            self.strategy = BollingerBandStrategy(period=10, std_dev=1.5)
+            print("선택된 전략: 볼린저밴드 상단 돌파")
+        elif self.strategy_type == 2:
+            self.strategy = RSIStrategy(period=14, oversold=30, overbought=70)
+            print("선택된 전략: RSI 과매도 반등")
+        else:
+            self.strategy = BollingerBandStrategy(period=10, std_dev=1.5)
+            print("기본 전략: 볼린저밴드 상단 돌파")
+            
+    def change_strategy(self, strategy_type):
+        """전략 변경"""
+        self.strategy_type = strategy_type
+        self.setup_strategy()
+        
     def login(self):
         """로그인"""
         self.api.comm_connect()
         
     def select_target_stocks(self):
-        """코스닥 거래대금 상위 15개 종목 선정"""
+        """코스닥 거래대금 상위 5개 종목 선정 (보유 종목 제외)"""
         print("코스닥 거래대금 상위 종목 조회 중...")
         
         try:
             # 코스닥 거래대금 상위 조회
             kosdaq_stocks = self.api.get_volume_rank(market="101")
             
-            # 상위 15개 선정
-            self.target_stocks = [stock['code'] for stock in kosdaq_stocks[:15]]
+            # 이미 보유한 종목 제외 (실제 계좌 잠고에서 가져오기)
+            try:
+                balance = self.api.get_balance()
+                held_stocks = set([stock['code'].replace('A', '') for stock in balance['stocks'] if stock['quantity'] > 0])
+                print(f"디버그 - 실제 보유 종목: {held_stocks}")
+            except:
+                held_stocks = set(self.position_manager.get_all_positions().keys())
+                print(f"디버그 - 포지션 매니저 보유 종목: {held_stocks}")
             
-            print(f"\n모니터링 대상 {len(self.target_stocks)}개 종목 선정 완료")
-            for stock in kosdaq_stocks[:15]:
-                print(f"{stock['name']}({stock['code']}): {stock['price']:,}원, 거래대금: {stock['trade_amount']:,}원, 등락률: {stock['change_rate']:.2f}%")
+            # 보유하지 않은 종목 중 일봉 데이터가 충분하고 볼린저밴드 조건을 만족하는 종목만 필터링
+            available_stocks = []
+            for stock in kosdaq_stocks:
+                stock_code = stock['code'].replace('A', '')  # A 접두사 제거
+                if stock_code not in held_stocks:
+                    try:
+                        daily_data = self.api.get_daily_data(stock_code)
+                        if daily_data and len(daily_data) >= 20:
+                            # 볼린저밴드 중간값 계산
+                            middle_band = self.strategy.get_buy_signal_price(daily_data)
+                            if middle_band and stock['price'] >= middle_band:
+                                stock['code'] = stock_code  # 통일된 코드로 업데이트
+                                available_stocks.append(stock)
+                        if len(available_stocks) >= 5:  # 5개 찾으면 중단
+                            break
+                    except:
+                        continue
+            
+            self.target_stocks = [stock['code'] for stock in available_stocks[:5]]
+            
+            print(f"\n모니터링 대상 {len(self.target_stocks)}개 종목 선정 완료 (보유 종목 {len(held_stocks)}개 제외)")
+            print("-" * 115)
+            print(f"{'순위':<4} {'종목명':<10} {'코드':<8} {'현재가':>12} {'매수신호가':>12} {'거래대금':>15} {'등락률':>8}")
+            print("-" * 110)
+            
+            for i, stock in enumerate(available_stocks[:5], 1):
+                # 매수신호 발생 가격 계산
+                try:
+                    daily_data = self.api.get_daily_data(stock['code'])
+                    if daily_data and len(daily_data) >= 20:
+                        buy_signal_price = self.strategy.get_buy_signal_price(daily_data)
+                        if buy_signal_price:
+                            signal_price_str = f"{buy_signal_price:,}원"
+                        else:
+                            signal_price_str = "계산실패"
+                    else:
+                        signal_price_str = "데이터부족"
+                except Exception as e:
+                    signal_price_str = "오류"
+                    
+                # 종목명을 10자리로 맞추기
+                name_10char = (stock['name'][:10]).ljust(10)
+                print(f"{i:<4} {name_10char} {stock['code']:<8} {stock['price']:>9,}원 {signal_price_str:>12} {stock['trade_amount']:>12,}원 {stock['change_rate']:>7.2f}%")
+            print("-" * 115)
+            
+            # 디버깅: 에코프로 상세 정보 출력 (목록 출력 후)
+            for stock in available_stocks[:5]:
+                if stock['name'] == '에코프로':
+                    try:
+                        daily_data = self.api.get_daily_data(stock['code'])
+                        if daily_data and len(daily_data) >= 20:
+                            print(f"\n=== {stock['name']} 디버깅 ===")
+                            print(f"일봉 데이터 개수: {len(daily_data)}")
+                            print(f"최근 5일 종가: {[row[4] for row in daily_data[:5]]}")
+                            
+                            # 볼린저밴드 직접 계산
+                            prices = [row[4] for row in daily_data]
+                            prices.reverse()
+                            recent_10_prices = prices[-10:]
+                            avg_price = sum(recent_10_prices) / 10
+                            std_dev = (sum([(p - avg_price) ** 2 for p in recent_10_prices]) / 10) ** 0.5
+                            upper_band = avg_price + (std_dev * 1.5)
+                            print(f"10일 평균: {avg_price:,.0f}원")
+                            print(f"표준편차: {std_dev:,.0f}")
+                            print(f"상단밴드: {upper_band:,.0f}원")
+                            print(f"현재가: {stock['price']:,}원")
+                            print("=" * 30)
+                    except:
+                        pass
+                    break
                 
         except Exception as e:
             print(f"종목 선정 실패: {e}")
@@ -47,7 +140,12 @@ class TradingBot:
             self.target_stocks = []
             
     def check_buy_signals(self):
-        """매수 신호 확인"""
+        """매수 신호 확인 (9:10-10:00만 매수)"""
+        # 매수 시간 제한 확인
+        # current_time = time.strftime("%H%M")
+        # if not ("0910" <= current_time <= "1000"):
+        #     return
+            
         positions = self.position_manager.get_all_positions()
         if len(positions) >= self.max_stocks:
             return
@@ -183,6 +281,19 @@ class TradingBot:
 
 
 if __name__ == "__main__":
+    import argparse
+    
+    # 명령행 인수 처리
+    parser = argparse.ArgumentParser(description='키움증권 트레이딩 봇')
+    parser.add_argument('--strategy', type=int, choices=[1, 2], default=1,
+                        help='매매전략 선택 (1: 볼린저밴드, 2: RSI)')
+    args = parser.parse_args()
+    
     app = QApplication(sys.argv)
     bot = TradingBot()
+    
+    # 전략 설정
+    if args.strategy != bot.strategy_type:
+        bot.change_strategy(args.strategy)
+    
     bot.run()
