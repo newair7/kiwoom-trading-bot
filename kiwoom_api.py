@@ -196,7 +196,7 @@ class KiwoomAPI:
             
     def get_balance(self):
         """잔고 조회
-            password:모의투자는 0000, KOA에서 입력된값으로 자동 채워짐. (아래 빈문자열)
+            password:모의투자는 0000, KOA에서 입력된값으로 자동 채워짐. (아래 빈문자열 push test)
         """
         self.set_input_value("계좌번호", self.account_num)
         self.set_input_value("비밀번호", "")  # 빈 문자열 = 저장된 비밀번호 사용
