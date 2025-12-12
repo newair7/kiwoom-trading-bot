@@ -149,6 +149,25 @@ class KiwoomAPI:
                 })
             self.tr_data = stocks
             
+        elif rqname == "미체결요청":
+            cnt = self.ocx.dynamicCall("GetRepeatCnt(QString, QString)", trcode, rqname)
+            orders = []
+            for i in range(cnt):
+                order_no = self.ocx.dynamicCall("GetCommData(QString, QString, int, QString)", trcode, rqname, i, "주문번호").strip()
+                code = self.ocx.dynamicCall("GetCommData(QString, QString, int, QString)", trcode, rqname, i, "종목코드").strip()
+                name = self.ocx.dynamicCall("GetCommData(QString, QString, int, QString)", trcode, rqname, i, "종목명").strip()
+                order_type = self.ocx.dynamicCall("GetCommData(QString, QString, int, QString)", trcode, rqname, i, "매매구분").strip()
+                quantity = self.ocx.dynamicCall("GetCommData(QString, QString, int, QString)", trcode, rqname, i, "주문수량").strip()
+                
+                orders.append({
+                    'order_no': order_no,
+                    'code': code,
+                    'name': name,
+                    'order_type': order_type,
+                    'quantity': int(quantity) if quantity else 0
+                })
+            self.tr_data = orders
+            
         self.tr_event_loop.exit()
         
     def get_kosdaq_codes(self):
@@ -236,3 +255,63 @@ class KiwoomAPI:
         self.comm_rq_data("거래대금상위", "opt10032", 0, "0104")
         time.sleep(1.0)
         return self.tr_data
+        
+    def get_not_concluded_orders(self, order_type="1"):
+        """미체결 주문 조회 (opt10075)
+        order_type: 0-전체, 1-매도, 2-매수
+        """
+        self.set_input_value("계좌번호", self.account_num)
+        self.set_input_value("전체종목구분", "0")  # 0:전체
+        self.set_input_value("매매구분", order_type)  # 1:매도, 2:매수
+        self.set_input_value("종목코드", "")  # 전체 종목
+        self.set_input_value("체결구분", "1")  # 1:미체결
+        self.set_input_value("거래소구분", "0")  # 0:통합
+        self.comm_rq_data("미체결요청", "opt10075", 0, "0105")
+        time.sleep(1.0)
+        return self.tr_data
+        
+    def show_buy_orders(self):
+        """매수 미체결 주문 조회 및 출력"""
+        try:
+            print("\n매수 미체결 주문 조회 중...")
+            orders = self.get_not_concluded_orders("2")  # 2:매수
+            
+            if not orders or not isinstance(orders, list):
+                print("매수 미체결 주문이 없습니다.")
+                return
+                
+            print(f"\n[매수 미체결] {len(orders)}건")
+            for order in orders:
+                if isinstance(order, dict):
+                    print(f"  {order.get('name', '')}({order.get('code', '')}): {order.get('quantity', 0)}주 대기중")
+        except Exception as e:
+            print(f"매수 미체결 주문 조회 오류: {e}")
+        
+    def cancel_sell_orders(self):
+        """매도 미체결 주문만 취소"""
+        print("매도 미체결 주문 조회 중...")
+        try:
+            orders = self.get_not_concluded_orders("1")  # 1:매도
+            if not orders or not isinstance(orders, list):
+                print("매도 미체결 주문이 없습니다.")
+                return
+                
+            print(f"매도 미체결 주문 {len(orders)}건 취소 시작...")
+            
+            for order in orders:
+                try:
+                    if not isinstance(order, dict):
+                        continue
+                    ret = self.send_order("매도취소", "0106", self.account_num,
+                                          4, order.get('code', ''), 0, 0, "00", order.get('order_no', ''))
+                    if ret == 0:
+                        print(f"취소 성공: {order.get('name', '')}({order.get('code', '')}) {order.get('quantity', 0)}주")
+                    else:
+                        print(f"취소 실패: {order.get('name', '')}({order.get('code', '')}) - 오류코드: {ret}")
+                    time.sleep(0.5)
+                except Exception as e:
+                    print(f"취소 오류: {order.get('name', '')}({order.get('code', '')}) - {e}")
+                    
+        except Exception as e:
+            print(f"매도 미체결 주문 취소 오류: {e}")
+        time.sleep(1.0)

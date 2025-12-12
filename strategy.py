@@ -166,6 +166,162 @@ class RSIStrategy:
         return ((current_price - buy_price) / buy_price) * 100
 
 
+class ScalpingStrategy:
+    def __init__(self, volume_threshold=1000000000, price_change_threshold=3.0):
+        """
+        단타 전략 (Strategy-3)
+        volume_threshold: 거래대금 임계값 (기본 10억)
+        price_change_threshold: 가격 변동 임계값 (기본 3%)
+        """
+        self.volume_threshold = volume_threshold
+        self.price_change_threshold = price_change_threshold
+        
+    def check_buy_signal(self, daily_data):
+        """매수 신호 확인 - 거래대금 급증 + 가격 상승"""
+        if not daily_data or not isinstance(daily_data, list) or len(daily_data) < 3:
+            return False
+            
+        try:
+            # 최근 3일 데이터
+            recent_data = daily_data[:3]
+            
+            # 오늘 데이터
+            today = recent_data[0]
+            yesterday = recent_data[1]
+            
+            today_close = today[4]  # 종가
+            today_volume = today[5]  # 거래량
+            yesterday_close = yesterday[4]
+            
+            # 가격 상승률 계산
+            price_change = ((today_close - yesterday_close) / yesterday_close) * 100
+            
+            # 단타 조건: 거래량 급증 + 3% 이상 상승
+            if (today_volume * today_close > self.volume_threshold and 
+                price_change >= self.price_change_threshold):
+                return True
+                
+            return False
+        except (TypeError, IndexError, ValueError, ZeroDivisionError):
+            return False
+    
+    def get_buy_signal_price(self, daily_data):
+        """매수신호 발생 가격 계산 (현재가 기준)"""
+        if not daily_data or not isinstance(daily_data, list) or len(daily_data) < 1:
+            return None
+            
+        try:
+            current_price = daily_data[0][4]  # 최신 종가
+            return int(current_price * 1.01)  # 현재가의 101% (상승 모멘텀 타기)
+        except (TypeError, IndexError, ValueError):
+            return None
+    
+    def calculate_profit_rate(self, buy_price, current_price):
+        """수익률 계산"""
+        if buy_price <= 0:
+            return 0
+        return ((current_price - buy_price) / buy_price) * 100
+
+
+class VolatilityBreakoutStrategy:
+    def __init__(self, k_ratio=0.5, volume_multiplier=1.5):
+        """
+        래리 윌리엄스 변동성 돌파전략 (Strategy-4) - 개선버전
+        k_ratio: 기본 변동성 비율 (기본 0.5)
+        volume_multiplier: 거래량 증가 배수 (기본 1.5배)
+        매수: 시가 + (전일 고가 - 전일 저가) * 적응형_K값
+        """
+        self.k_ratio = k_ratio
+        self.volume_multiplier = volume_multiplier
+        
+    def calculate_adaptive_k(self, daily_data):
+        """적응형 K값 계산 - 변동성에 따라 조정"""
+        if len(daily_data) < 10:
+            return self.k_ratio
+            
+        try:
+            # 최근 10일 변동성 계산
+            recent_ranges = []
+            for i in range(min(10, len(daily_data))):
+                high = daily_data[i][2]
+                low = daily_data[i][3]
+                recent_ranges.append(high - low)
+            
+            avg_range = sum(recent_ranges) / len(recent_ranges)
+            yesterday_range = daily_data[1][2] - daily_data[1][3]
+            
+            # 변동성이 평균보다 클 때 K값 증가, 작을 때 감소
+            if yesterday_range > avg_range * 1.2:
+                return min(self.k_ratio * 0.7, 0.4)  # 변동성 클 때 낮게
+            elif yesterday_range < avg_range * 0.8:
+                return min(self.k_ratio * 1.3, 0.8)  # 변동성 작을 때 높게
+            else:
+                return self.k_ratio
+        except:
+            return self.k_ratio
+        
+    def check_buy_signal(self, daily_data):
+        """매수 신호 확인 - 개선된 변동성 돌파 + 거래량 필터"""
+        if not daily_data or not isinstance(daily_data, list) or len(daily_data) < 3:
+            return False
+            
+        try:
+            # 오늘과 어제 데이터
+            today = daily_data[0]  # [date, open, high, low, close, volume]
+            yesterday = daily_data[1]
+            day_before = daily_data[2]
+            
+            today_open = today[1]  # 시가
+            today_high = today[2]  # 고가
+            today_volume = today[5]  # 거래량
+            yesterday_high = yesterday[2]  # 전일 고가
+            yesterday_low = yesterday[3]   # 전일 저가
+            yesterday_volume = yesterday[5]  # 전일 거래량
+            
+            # 적응형 K값 계산
+            adaptive_k = self.calculate_adaptive_k(daily_data)
+            
+            # 변동성 돌파 가격 계산
+            breakout_price = today_open + (yesterday_high - yesterday_low) * adaptive_k
+            
+            # 거래량 필터: 오늘 거래량이 어제보다 1.5배 이상
+            volume_condition = today_volume >= yesterday_volume * self.volume_multiplier
+            
+            # 변동성 돌파 + 거래량 증가 조건
+            if today_high >= breakout_price and volume_condition:
+                return True
+                
+            return False
+        except (TypeError, IndexError, ValueError, ZeroDivisionError):
+            return False
+    
+    def get_buy_signal_price(self, daily_data):
+        """매수신호 발생 가격 계산 (적응형 변동성 돌파 가격)"""
+        if not daily_data or not isinstance(daily_data, list) or len(daily_data) < 2:
+            return None
+            
+        try:
+            today = daily_data[0]
+            yesterday = daily_data[1]
+            
+            today_open = today[1]
+            yesterday_high = yesterday[2]
+            yesterday_low = yesterday[3]
+            
+            # 적응형 K값 사용
+            adaptive_k = self.calculate_adaptive_k(daily_data)
+            breakout_price = today_open + (yesterday_high - yesterday_low) * adaptive_k
+            return int(breakout_price)
+        except (TypeError, IndexError, ValueError):
+            return None
+    
+    def calculate_profit_rate(self, buy_price, current_price):
+        """수익률 계산"""
+        if buy_price <= 0:
+            return 0
+        return ((current_price - buy_price) / buy_price) * 100
+
+
 class PositionManager:
     def __init__(self):
         """포지션 관리"""
